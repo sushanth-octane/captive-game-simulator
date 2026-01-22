@@ -208,83 +208,95 @@
 
     const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
+    // --- New Engine supporting Start Year Transition ---
     const computeSimulation = ({
-      annualVolume,
-      avgLoan,
-      stores,
-      frontendGross,
-      earningPerVehicle,
-      apr,
-      firstLook,
-      fiIncentive,
+      initialData,
+      currentData,
+      startYear = 1,
       cards,
     }) => {
-      // --- 1. Determine Multipliers ---
+
+      const startMonth = (startYear - 1) * 12 + 1;
+
+      // --- 1. Pre-calculate Multipliers for "Active" State ---
       const activeCards = strategyCards.filter((card) =>
         cards.includes(card.id)
       );
 
-      let baseVolumeMult = 1 + activeCards.reduce((sum, card) => sum + card.volume, 0);
-      let baseReserveMult = 1 + activeCards.reduce((sum, card) => sum + card.reserve, 0);
-      let baseYieldMult = 1 + activeCards.reduce((sum, card) => sum + card.yield, 0);
-      let runoff = baseAssumptions.runoff;
-
-      const aprDelta = apr - baseAssumptions.baseApr;
-      baseVolumeMult *= 1 - aprDelta * 0.03;
-      baseYieldMult *= 1 + aprDelta * 0.04;
-
-      if (firstLook) {
-        baseVolumeMult *= 1.08;
-        baseYieldMult *= 1.06;
-        runoff -= 0.02;
-      }
-
-      const incentiveFactor = fiIncentive / 100;
-      baseVolumeMult *= 1 + incentiveFactor * 0.6;
-      baseReserveMult *= 1 + incentiveFactor;
-      baseYieldMult *= 1 + incentiveFactor * 0.4;
-
-      const adjustedRunoff = clamp(runoff, 0.15, 0.5);
+      // Base multipliers (Strategy Impact)
+      let stratVolumeMult = 1 + activeCards.reduce((sum, card) => sum + card.volume, 0);
+      let stratReserveMult = 1 + activeCards.reduce((sum, card) => sum + card.reserve, 0);
+      let stratYieldMult = 1 + activeCards.reduce((sum, card) => sum + card.yield, 0);
+      const hasSeasonalPromos = cards.includes("limited-promos");
 
       // --- 2. Run Monthly Simulation (120 Months) ---
       let portfolio = 0;
       const monthlyData = [];
-      const monthlyVolumeBase = annualVolume / 12;
-      const hasSeasonalPromos = cards.includes("limited-promos");
 
       for (let m = 1; m <= 120; m++) {
         const year = Math.ceil(m / 12);
         const monthOfYear = (m - 1) % 12;
 
-        // Apply Seasonality / Events
-        let monthlyVolumeMult = baseVolumeMult;
-        let currentApr = apr;
-        let currentYieldMult = baseYieldMult;
+        // Determine if we are in "Status Quo" phase or "Active Strategy" phase
+        const isStrategyActive = m >= startMonth;
 
-        // Simulating "Events" for the charts
-        // If "Limited Promos" is on, we spike volume and drop APR every June & December
-        if (hasSeasonalPromos && (monthOfYear === 5 || monthOfYear === 11)) {
-          monthlyVolumeMult *= 1.4; // Spike volume
-          currentApr -= 1.5;        // Drop APR
-          currentYieldMult *= 0.9;  // Yield drops slightly due to promo rate
-        } else {
-          // Standard mild seasonality
-          const seasonality = 1 + 0.08 * Math.sin((monthOfYear / 12) * Math.PI * 2);
-          monthlyVolumeMult *= seasonality;
+        // Select Inputs based on time
+        const activeInputs = isStrategyActive ? currentData : initialData;
+
+        // Extract inputs for this month
+        const {
+          annualVolume, avgLoan, earningPerVehicle,
+          apr, firstLook, fiIncentive
+        } = activeInputs;
+
+        // Start with baseline multipliers (1.0 if no strategy, or Strategy values if active)
+        let currentVolumeMult = isStrategyActive ? stratVolumeMult : 1.0;
+        let currentReserveMult = isStrategyActive ? stratReserveMult : 1.0;
+        let currentYieldMult = isStrategyActive ? stratYieldMult : 1.0;
+
+        // Apply APR Delta impact (Price Elasticity)
+        const aprDelta = apr - baseAssumptions.baseApr;
+        currentVolumeMult *= 1 - aprDelta * 0.03;
+        currentYieldMult *= 1 + aprDelta * 0.04;
+
+        // Apply First Look
+        let runoff = baseAssumptions.runoff;
+        if (firstLook) {
+          currentVolumeMult *= 1.08;
+          currentYieldMult *= 1.06;
+          runoff -= 0.02;
         }
 
-        const adjustedVolume = monthlyVolumeBase * clamp(monthlyVolumeMult, 0.2, 3.0);
-        const adjustedReserve = baseAssumptions.baseReserve * baseReserveMult;
-        const adjustedYield = baseAssumptions.baseYield * currentYieldMult + (currentApr - baseAssumptions.baseApr) * 0.002;
+        // Apply Incentives
+        const incentiveFactor = fiIncentive / 100;
+        currentVolumeMult *= 1 + incentiveFactor * 0.6;
+        currentReserveMult *= 1 + incentiveFactor;
+        currentYieldMult *= 1 + incentiveFactor * 0.4;
+
+        // Apply Seasonality / Events (Only if strategy allows, or just standard seasonality)
+        if (isStrategyActive && hasSeasonalPromos && (monthOfYear === 5 || monthOfYear === 11)) {
+          currentVolumeMult *= 1.4; // Spike volume
+          // currentApr -= 1.5;    // We don't change input APR variable, but effect is simulated
+          currentYieldMult *= 0.9;
+        } else {
+          const seasonality = 1 + 0.08 * Math.sin((monthOfYear / 12) * Math.PI * 2);
+          currentVolumeMult *= seasonality;
+        }
+
+        const monthlyVolumeBase = annualVolume / 12;
+        const adjustedVolume = monthlyVolumeBase * clamp(currentVolumeMult, 0.2, 3.0);
+        const adjustedReserve = baseAssumptions.baseReserve * currentReserveMult;
+        // Yield is base + multiplier effect + APR variance
+        const adjustedYield = baseAssumptions.baseYield * currentYieldMult + (apr - baseAssumptions.baseApr) * 0.002;
+        const adjustedRunoff = clamp(runoff, 0.15, 0.5);
 
         const originations = adjustedVolume * avgLoan;
-        // Monthly runoff approx (annual runoff / 12)
         const runoffAmount = portfolio * (adjustedRunoff / 12);
 
         portfolio = portfolio - runoffAmount + originations;
 
         const reserveIncome = originations * adjustedReserve;
-        const yieldIncome = portfolio * (adjustedYield / 12); // monthly yield
+        const yieldIncome = portfolio * (adjustedYield / 12);
         const grossProfit = reserveIncome + yieldIncome;
         const dealerProfit = grossProfit * baseAssumptions.dealerShare;
         const incentiveCost = adjustedVolume * earningPerVehicle * incentiveFactor;
@@ -297,70 +309,56 @@
           netDealerProfit,
           originations,
           volume: adjustedVolume,
-          apr: currentApr,
-          penetration: monthlyVolumeMult, // Using multiplier as proxy for penetration
+          apr: apr, // Store effective APR for chart
+          penetration: currentVolumeMult,
           cumulativeProfit: (monthlyData[monthlyData.length - 1]?.cumulativeProfit || 0) + netDealerProfit
         });
       }
 
-      // --- 3. Aggregate Annual Data (for backwards compatibility) ---
+      // --- 3. Aggregates ---
       const portfolioValues = [];
       const annualProfits = [];
-      const annualReserves = []; // We won't strictly use this but keep structure
       const annualIncentives = [];
 
       for (let y = 1; y <= 10; y++) {
         const yearData = monthlyData.filter(d => d.year === y);
         portfolioValues.push({ year: y, value: yearData[yearData.length - 1].portfolio });
         annualProfits.push({ year: y, value: yearData.reduce((s, d) => s + d.netDealerProfit, 0) });
-        // simplified aggregates for other metrics
-        annualIncentives.push({ year: y, value: yearData.reduce((s, d) => s + (d.volume * earningPerVehicle * incentiveFactor), 0) });
+        annualIncentives.push({ year: y, value: yearData.reduce((s, d) => s + (d.volume * currentData.earningPerVehicle * (currentData.fiIncentive / 100)), 0) });
       }
 
-      // --- 4. Score Calculation ---
-      const ppu = annualVolume > 0 ? (annualProfits[9].value / annualVolume) : 0;
+      const ppu = currentData.annualVolume > 0 ? (annualProfits[9].value / currentData.annualVolume) : 0;
       const normalizedPPU = clamp(ppu / 1500, 0, 1);
       const score = Math.round(normalizedPPU * 100);
-
-      const monthlyReserve = monthlyData[monthlyData.length - 1].portfolio * (baseAssumptions.baseYield * baseYieldMult / 12); // approx
+      const monthlyReserve = monthlyData[monthlyData.length - 1].portfolio * (baseAssumptions.baseYield * stratYieldMult / 12);
       const monthlyDeals = monthlyData[monthlyData.length - 1].volume;
-
       const annualIncentiveCost = annualIncentives.reduce((sum, item) => sum + item.value, 0) / 10;
-      const averageAdjustedVolume = monthlyData.reduce((s, d) => s + d.volume, 0) / 10; // annual avg
+      const averageAdjustedVolume = monthlyData.reduce((s, d) => s + d.volume, 0) / 10;
 
       return {
         adjustedVolume: averageAdjustedVolume,
-        adjustedReserve: baseAssumptions.baseReserve * baseReserveMult,
-        adjustedYield: baseAssumptions.baseYield * baseYieldMult,
         portfolioValues,
         annualProfits,
         score,
         monthlyReserve,
         monthlyDeals,
-        monthlyProduction: monthlyData.slice(0, 12).map(d => ({ month: d.month, value: d.netDealerProfit })), // Just first year for mini chart
         annualIncentiveCost,
-        monthlyData // NEW: Passing full resolution data
+        monthlyData
       };
     };
 
-    // --- New Chart Components ---
+    // --- Chart Components (Unchanged visual logic, but using new data) ---
 
-    const DualAxisLineChart = ({ data }) => {
-      // Data contains 120 months.
-      // Left Axis: APR (data.apr) - usually 0 to 20
-      // Right Axis: Penetration (data.penetration) - usually 0.5 to 2.5
-
+    const DualAxisLineChart = ({ data, startYear }) => {
       if (!data || data.length === 0) return null;
 
       const maxApr = 20;
       const minApr = 0;
-      const maxPen = 3.0; // Increased scale slightly
+      const maxPen = 3.0;
       const minPen = 0;
-
       const width = 100;
       const height = 100;
 
-      // Path Generators
       const generatePath = (key, min, max) => {
         return data.map((d, i) => {
           const x = (i / (data.length - 1)) * (width);
@@ -372,6 +370,10 @@
       const aprPath = generatePath('apr', minApr, maxApr);
       const penPath = generatePath('penetration', minPen, maxPen);
 
+      // Calculate X position for the start year vertical line
+      // Start Year 1 = 0% width, Start Year 6 = 50% width roughly
+      const startX = ((startYear - 1) * 12) / (data.length - 1) * width;
+
       return (
         <div className="relative w-full h-full pb-4">
           <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible" preserveAspectRatio="none">
@@ -382,32 +384,30 @@
               </linearGradient>
             </defs>
 
-            {/* Grid Lines (Vertical Years) */}
             {Array.from({ length: 11 }).map((_, i) => (
               <line key={i} x1={i * 10} y1="0" x2={i * 10} y2={height} stroke="rgba(255,255,255,0.05)" strokeWidth="0.5" />
             ))}
 
-            {/* Penetration Area Fill */}
             <path d={`M0,${height} ${penPath} L${width},${height} Z`} fill="url(#gradPen)" />
-            {/* Penetration Line */}
             <polyline points={penPath} fill="none" stroke="#7CD4E6" strokeWidth="2" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-
-            {/* APR Line */}
             <polyline points={aprPath} fill="none" stroke="#F15A29" strokeWidth="2" strokeDasharray="4,2" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+
+            {/* Implementation Marker */}
+            {startYear > 1 && (
+              <g>
+                <line x1={startX} y1="0" x2={startX} y2={height} stroke="#F15A29" strokeWidth="1" strokeDasharray="2,2" />
+              </g>
+            )}
           </svg>
 
-          {/* Labels - Top Legend */}
           <div className="absolute -top-2 left-2 text-[10px] text-ember font-bold tracking-widest bg-ink/80 px-1 rounded">APR %</div>
           <div className="absolute -top-2 right-2 text-[10px] text-sky font-bold tracking-widest bg-ink/80 px-1 rounded">VOL MULT</div>
 
-          {/* Y-Axis Value Indicators (Min/Max) */}
           <div className="absolute top-4 left-0 text-[9px] text-ember/60 font-mono">20%</div>
           <div className="absolute bottom-6 left-0 text-[9px] text-ember/60 font-mono">0%</div>
-
           <div className="absolute top-4 right-0 text-[9px] text-sky/60 font-mono">3.0x</div>
           <div className="absolute bottom-6 right-0 text-[9px] text-sky/60 font-mono">0x</div>
 
-          {/* X-Axis Time Labels */}
           <div className="absolute bottom-0 left-0 w-full flex justify-between px-1 text-[10px] text-sand/40 font-mono pt-2 border-t border-white/5">
             <span>Yr 1</span>
             <span>Yr 5</span>
@@ -418,7 +418,6 @@
     };
 
     const StackedAreaChart = ({ baselineData, activeData }) => {
-      // Compare cumulativeProfit
       if (!baselineData || !activeData) return null;
 
       const width = 100;
@@ -427,9 +426,8 @@
       const maxProfit = Math.max(
         activeData[activeData.length - 1].cumulativeProfit,
         baselineData[baselineData.length - 1].cumulativeProfit
-      ) * 1.1; // +10% padding
+      ) * 1.1;
 
-      // Format max profit for axis label (e.g., $15M)
       const formatAxisValue = (val) => {
         if (val >= 1000000) return `$${(val / 1000000).toFixed(1)}M`;
         if (val >= 1000) return `$${(val / 1000).toFixed(0)}k`;
@@ -458,29 +456,22 @@
               </linearGradient>
             </defs>
 
-            {/* Grid Lines (Vertical Years) */}
             {Array.from({ length: 11 }).map((_, i) => (
               <line key={i} x1={i * 10} y1="0" x2={i * 10} y2={height} stroke="rgba(255,255,255,0.05)" strokeWidth="0.5" />
             ))}
 
-            {/* Active (Top) Layer */}
             <path d={activeArea} fill="#7CD4E6" fillOpacity="0.1" />
             <path d={activeArea} fill="url(#gradDiff)" />
             <polyline points={activeArea.split(" L")[0].substring(1)} fill="none" stroke="#7CD4E6" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-
-            {/* Baseline Wealth */}
             <path d={baseArea} fill="#333" fillOpacity="0.5" />
             <polyline points={baseArea.split(" L")[0].substring(1)} fill="none" stroke="#666" strokeWidth="1" strokeDasharray="2,2" vectorEffect="non-scaling-stroke" />
 
           </svg>
           <div className="absolute bottom-8 right-2 text-[10px] text-sky font-bold tracking-widest bg-ink/80 px-1 rounded">TOTAL WEALTH</div>
           <div className="absolute bottom-12 left-10 text-[10px] text-gray-400 font-bold tracking-widest -rotate-12 pointer-events-none opacity-60">BASELINE</div>
-
-          {/* Y-Axis Labels */}
           <div className="absolute top-0 right-0 text-[9px] text-sky/60 font-mono">{formatAxisValue(maxProfit)}</div>
           <div className="absolute bottom-6 right-0 text-[9px] text-sky/60 font-mono">$0</div>
 
-          {/* X-Axis Time Labels */}
           <div className="absolute bottom-0 left-0 w-full flex justify-between px-1 text-[10px] text-sand/40 font-mono pt-2 border-t border-white/5">
             <span>Yr 1</span>
             <span>Yr 5</span>
@@ -841,14 +832,28 @@
       </div>
     );
 
-    const Dashboard = ({ leadData, cards, onToggleCard }) => {
+    const Dashboard = ({ leadData, initialLeadData, cards, onToggleCard }) => {
+      const [startYear, setStartYear] = useState(1);
+
       const simulation = useMemo(
-        () => computeSimulation({ ...leadData, cards }),
-        [leadData, cards]
+        () => computeSimulation({
+          initialData: initialLeadData,
+          currentData: leadData,
+          startYear: startYear,
+          cards
+        }),
+        [leadData, initialLeadData, cards, startYear]
       );
+
+      // Baseline for comparisons is always "Status Quo" with no cards
       const baselineSimulation = useMemo(
-        () => computeSimulation({ ...leadData, fiIncentive: 0, cards: [] }),
-        [leadData]
+        () => computeSimulation({
+          initialData: initialLeadData,
+          currentData: initialLeadData,
+          startYear: 1,
+          cards: []
+        }),
+        [initialLeadData]
       );
 
       const portfolioNow = simulation.portfolioValues[9].value;
@@ -891,12 +896,23 @@
                       Impact of Strategy Over Time
                     </p>
                   </div>
+
+                  <div className="w-full md:w-64">
+                    <SliderInput
+                      label={`Implementation Year: ${startYear}`}
+                      value={startYear}
+                      min={1}
+                      max={10}
+                      step={1}
+                      onChange={setStartYear}
+                    />
+                  </div>
                 </div>
 
                 <div className="grid gap-8">
                   {/* CHART 1: Strategy Metrics */}
                   <div className="h-48 w-full border-b border-white/5 pb-8">
-                    <DualAxisLineChart data={simulation.monthlyData} />
+                    <DualAxisLineChart data={simulation.monthlyData} startYear={startYear} />
                   </div>
 
                   {/* CHART 2: Wealth Stack */}
@@ -927,7 +943,7 @@
                 </div>
                 <div className="rounded-3xl border border-white/10 bg-white/5 p-6 space-y-6">
                   <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
-                    Baseline Inputs
+                    Scenario Inputs (Year {startYear}+)
                   </p>
                   <SliderInput
                     label="APR"
@@ -1061,6 +1077,10 @@
         firstLook: false,
         fiIncentive: 10,
       });
+
+      // --- Store baseline when entering dashboard ---
+      const [initialLeadData, setInitialLeadData] = useState(null);
+
       const [cards, setCards] = useState([]);
 
       const containerStyles =
@@ -1070,6 +1090,14 @@
         setCards((prev) =>
           prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
         );
+      };
+
+      const handleNextStep = () => {
+        if (step === 2) {
+          // Snapshot data before entering dashboard
+          setInitialLeadData({ ...leadData });
+        }
+        setStep(step + 1);
       };
 
       return (
@@ -1093,12 +1121,13 @@
                 <LeadCapture
                   data={leadData}
                   onChange={(data) => setLeadData(data)}
-                  onNext={() => setStep(3)}
+                  onNext={handleNextStep}
                 />
               )}
-              {step === 3 && (
+              {step === 3 && initialLeadData && (
                 <Dashboard
                   leadData={{ ...leadData, setLeadData }}
+                  initialLeadData={initialLeadData}
                   cards={cards}
                   onToggleCard={handleToggleCard}
                 />
