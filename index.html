@@ -208,28 +208,11 @@
 
     const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
-    // --- New Engine supporting Start Year Transition ---
-    const computeSimulation = ({
-      initialData,
-      currentData,
-      startYear = 1,
-      cards,
-    }) => {
+    // --- Dynamic Timeline Simulation Engine ---
+    const computeSimulation = ({ timeline }) => {
+      // Timeline is an array of 10 objects (Year 1 to Year 10), 
+      // each containing: { inputs: {...}, cards: [...] }
 
-      const startMonth = (startYear - 1) * 12 + 1;
-
-      // --- 1. Pre-calculate Multipliers for "Active" State ---
-      const activeCards = strategyCards.filter((card) =>
-        cards.includes(card.id)
-      );
-
-      // Base multipliers (Strategy Impact)
-      let stratVolumeMult = 1 + activeCards.reduce((sum, card) => sum + card.volume, 0);
-      let stratReserveMult = 1 + activeCards.reduce((sum, card) => sum + card.reserve, 0);
-      let stratYieldMult = 1 + activeCards.reduce((sum, card) => sum + card.yield, 0);
-      const hasSeasonalPromos = cards.includes("limited-promos");
-
-      // --- 2. Run Monthly Simulation (120 Months) ---
       let portfolio = 0;
       const monthlyData = [];
 
@@ -237,29 +220,33 @@
         const year = Math.ceil(m / 12);
         const monthOfYear = (m - 1) % 12;
 
-        // Determine if we are in "Status Quo" phase or "Active Strategy" phase
-        const isStrategyActive = m >= startMonth;
+        // --- 1. Get Configuration for this Year ---
+        // We use year-1 because array is 0-indexed
+        const config = timeline[year - 1];
+        const { inputs, cards } = config;
 
-        // Select Inputs based on time
-        const activeInputs = isStrategyActive ? currentData : initialData;
+        // --- 2. Calculate Strategy Multipliers for this Year ---
+        const activeCards = strategyCards.filter((card) =>
+          cards.includes(card.id)
+        );
+        const hasSeasonalPromos = cards.includes("limited-promos");
 
-        // Extract inputs for this month
+        let currentVolumeMult = 1 + activeCards.reduce((sum, card) => sum + card.volume, 0);
+        let currentReserveMult = 1 + activeCards.reduce((sum, card) => sum + card.reserve, 0);
+        let currentYieldMult = 1 + activeCards.reduce((sum, card) => sum + card.yield, 0);
+
+        // --- 3. Apply Input Variables & Adjustments ---
         const {
           annualVolume, avgLoan, earningPerVehicle,
           apr, firstLook, fiIncentive
-        } = activeInputs;
+        } = inputs;
 
-        // Start with baseline multipliers (1.0 if no strategy, or Strategy values if active)
-        let currentVolumeMult = isStrategyActive ? stratVolumeMult : 1.0;
-        let currentReserveMult = isStrategyActive ? stratReserveMult : 1.0;
-        let currentYieldMult = isStrategyActive ? stratYieldMult : 1.0;
-
-        // Apply APR Delta impact (Price Elasticity)
+        // Price Elasticity
         const aprDelta = apr - baseAssumptions.baseApr;
         currentVolumeMult *= 1 - aprDelta * 0.03;
         currentYieldMult *= 1 + aprDelta * 0.04;
 
-        // Apply First Look
+        // First Look Impact
         let runoff = baseAssumptions.runoff;
         if (firstLook) {
           currentVolumeMult *= 1.08;
@@ -267,26 +254,23 @@
           runoff -= 0.02;
         }
 
-        // Apply Incentives
+        // Incentives Impact
         const incentiveFactor = fiIncentive / 100;
         currentVolumeMult *= 1 + incentiveFactor * 0.6;
         currentReserveMult *= 1 + incentiveFactor;
         currentYieldMult *= 1 + incentiveFactor * 0.4;
 
-        // Apply Seasonality / Events (Only if strategy allows, or just standard seasonality)
-        if (isStrategyActive && hasSeasonalPromos && (monthOfYear === 5 || monthOfYear === 11)) {
-          currentVolumeMult *= 1.4; // Spike volume
-          // currentApr -= 1.5;    // We don't change input APR variable, but effect is simulated
+        // Seasonality & Events
+        if (hasSeasonalPromos && (monthOfYear === 5 || monthOfYear === 11)) {
+          currentVolumeMult *= 1.4;
           currentYieldMult *= 0.9;
-        } else {
-          const seasonality = 1 + 0.08 * Math.sin((monthOfYear / 12) * Math.PI * 2);
-          currentVolumeMult *= seasonality;
         }
+        // Standard seasonality removed as requested
 
+        // --- 4. Monthly Calculation ---
         const monthlyVolumeBase = annualVolume / 12;
         const adjustedVolume = monthlyVolumeBase * clamp(currentVolumeMult, 0.2, 3.0);
         const adjustedReserve = baseAssumptions.baseReserve * currentReserveMult;
-        // Yield is base + multiplier effect + APR variance
         const adjustedYield = baseAssumptions.baseYield * currentYieldMult + (apr - baseAssumptions.baseApr) * 0.002;
         const adjustedRunoff = clamp(runoff, 0.15, 0.5);
 
@@ -309,13 +293,13 @@
           netDealerProfit,
           originations,
           volume: adjustedVolume,
-          apr: apr, // Store effective APR for chart
+          apr: apr,
           penetration: currentVolumeMult,
           cumulativeProfit: (monthlyData[monthlyData.length - 1]?.cumulativeProfit || 0) + netDealerProfit
         });
       }
 
-      // --- 3. Aggregates ---
+      // --- 5. Aggregates for Charts/KPIs ---
       const portfolioValues = [];
       const annualProfits = [];
       const annualIncentives = [];
@@ -324,13 +308,22 @@
         const yearData = monthlyData.filter(d => d.year === y);
         portfolioValues.push({ year: y, value: yearData[yearData.length - 1].portfolio });
         annualProfits.push({ year: y, value: yearData.reduce((s, d) => s + d.netDealerProfit, 0) });
-        annualIncentives.push({ year: y, value: yearData.reduce((s, d) => s + (d.volume * currentData.earningPerVehicle * (currentData.fiIncentive / 100)), 0) });
+
+        // Approximate incentive cost for annual aggregates
+        const yearInputs = timeline[y - 1].inputs;
+        annualIncentives.push({
+          year: y,
+          value: yearData.reduce((s, d) => s + (d.volume * yearInputs.earningPerVehicle * (yearInputs.fiIncentive / 100)), 0)
+        });
       }
 
-      const ppu = currentData.annualVolume > 0 ? (annualProfits[9].value / currentData.annualVolume) : 0;
+      // KPI Logic (Uses Year 10 or Averages)
+      const lastYearInputs = timeline[9].inputs;
+      const ppu = lastYearInputs.annualVolume > 0 ? (annualProfits[9].value / lastYearInputs.annualVolume) : 0;
       const normalizedPPU = clamp(ppu / 1500, 0, 1);
       const score = Math.round(normalizedPPU * 100);
-      const monthlyReserve = monthlyData[monthlyData.length - 1].portfolio * (baseAssumptions.baseYield * stratYieldMult / 12);
+
+      const monthlyReserve = monthlyData[monthlyData.length - 1].portfolio * 0.004; // Simple approx for dashboard KPI
       const monthlyDeals = monthlyData[monthlyData.length - 1].volume;
       const annualIncentiveCost = annualIncentives.reduce((sum, item) => sum + item.value, 0) / 10;
       const averageAdjustedVolume = monthlyData.reduce((s, d) => s + d.volume, 0) / 10;
@@ -347,9 +340,9 @@
       };
     };
 
-    // --- Chart Components (Unchanged visual logic, but using new data) ---
+    // --- Chart Components ---
 
-    const DualAxisLineChart = ({ data, startYear }) => {
+    const DualAxisLineChart = ({ data, focusYear }) => {
       if (!data || data.length === 0) return null;
 
       const maxApr = 20;
@@ -370,9 +363,7 @@
       const aprPath = generatePath('apr', minApr, maxApr);
       const penPath = generatePath('penetration', minPen, maxPen);
 
-      // Calculate X position for the start year vertical line
-      // Start Year 1 = 0% width, Start Year 6 = 50% width roughly
-      const startX = ((startYear - 1) * 12) / (data.length - 1) * width;
+      const startX = ((focusYear - 1) * 12) / (data.length - 1) * width;
 
       return (
         <div className="relative w-full h-full pb-4">
@@ -392,12 +383,11 @@
             <polyline points={penPath} fill="none" stroke="#7CD4E6" strokeWidth="2" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
             <polyline points={aprPath} fill="none" stroke="#F15A29" strokeWidth="2" strokeDasharray="4,2" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
 
-            {/* Implementation Marker */}
-            {startYear > 1 && (
-              <g>
-                <line x1={startX} y1="0" x2={startX} y2={height} stroke="#F15A29" strokeWidth="1" strokeDasharray="2,2" />
-              </g>
-            )}
+            {/* Editing Focus Marker */}
+            <g>
+              <line x1={startX} y1="0" x2={startX} y2={height} stroke="#F15A29" strokeWidth="1" strokeDasharray="1,1" opacity="0.5" />
+              <circle cx={startX} cy={height} r="1.5" fill="#F15A29" />
+            </g>
           </svg>
 
           <div className="absolute -top-2 left-2 text-[10px] text-ember font-bold tracking-widest bg-ink/80 px-1 rounded">APR %</div>
@@ -481,6 +471,33 @@
       );
     };
 
+    const CashFlowTable = ({ data }) => {
+      return (
+        <div className="overflow-x-auto max-h-64 custom-scrollbar">
+          <table className="w-full text-left text-sm">
+            <thead className="sticky top-0 bg-[#0E1A24] z-10 text-xs uppercase tracking-wider text-sand/50 border-b border-white/10">
+              <tr>
+                <th className="py-2">Year</th>
+                <th className="py-2 text-right">Net Profit</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {data.map((item) => (
+                <tr key={item.year} className="group hover:bg-white/5 transition-colors">
+                  <td className="py-2 font-mono text-sand/70">Year {item.year}</td>
+                  <td className="py-2 text-right font-mono text-sand">
+                    {formatCurrency(item.value)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    };
+
+    // --- UI Components ---
+
     const LineChart = ({ data }) => {
       const maxValue = Math.max(...data.map((d) => d.value), 1);
       const points = data
@@ -507,37 +524,7 @@
             strokeLinejoin="round"
             strokeLinecap="round"
           />
-          {data.map((d, i) => {
-            const x = (i / (data.length - 1)) * 100;
-            const y = 100 - (d.value / maxValue) * 100;
-            return (
-              <circle
-                key={d.year}
-                cx={x}
-                cy={y}
-                r="2"
-                fill="#7CD4E6"
-                className="opacity-0 hover:opacity-100 transition-opacity duration-200"
-              />
-            );
-          })}
         </svg>
-      );
-    };
-
-    const BarChart = ({ data }) => {
-      const maxValue = Math.max(...data.map((d) => d.value), 1);
-      return (
-        <div className="flex items-end gap-2 h-32">
-          {data.map((d) => (
-            <div
-              key={d.year}
-              className="flex-1 rounded-t bg-emerald-400/70 hover:bg-emerald-400 transition-colors"
-              style={{ height: `${(d.value / maxValue) * 100}%` }}
-              title={`Year ${d.year}: ${formatCurrency(d.value)}`}
-            />
-          ))}
-        </div>
       );
     };
 
@@ -581,7 +568,6 @@
           <div className="text-right text-xs uppercase tracking-[0.2em] font-mono opacity-80">
             <div>Vol {card.volume > 0 ? "+" : ""}{Math.round(card.volume * 100)}%</div>
             <div>Res {card.reserve > 0 ? "+" : ""}{Math.round(card.reserve * 100)}%</div>
-            <div>Yld {card.yield > 0 ? "+" : ""}{Math.round(card.yield * 100)}%</div>
           </div>
         </div>
       </button>
@@ -832,38 +818,61 @@
       </div>
     );
 
-    const Dashboard = ({ leadData, initialLeadData, cards, onToggleCard }) => {
-      const [startYear, setStartYear] = useState(1);
+    const Dashboard = ({ timeline, onUpdateTimeline, initialLeadData }) => {
+      const [focusYear, setFocusYear] = useState(1);
+
+      // Determine what to display based on the selected year
+      const activeConfig = timeline[focusYear - 1];
+      const activeInputs = activeConfig.inputs;
+      const activeCards = activeConfig.cards;
+
+      // Handle Input Change: Updates current year AND all future years (Propagation)
+      const handleInputChange = (key, value) => {
+        const newTimeline = [...timeline];
+        // Propagate change from focusYear to Year 10
+        for (let i = focusYear - 1; i < 10; i++) {
+          newTimeline[i] = {
+            ...newTimeline[i],
+            inputs: { ...newTimeline[i].inputs, [key]: value }
+          };
+        }
+        onUpdateTimeline(newTimeline);
+      };
+
+      // Handle Card Toggle: Updates current year AND all future years
+      const handleCardToggle = (cardId) => {
+        const newTimeline = [...timeline];
+        const isCurrentlyActive = activeCards.includes(cardId);
+
+        for (let i = focusYear - 1; i < 10; i++) {
+          let yearCards = [...newTimeline[i].cards];
+          if (isCurrentlyActive) {
+            // Removing card
+            yearCards = yearCards.filter(c => c !== cardId);
+          } else {
+            // Adding card (if not already there)
+            if (!yearCards.includes(cardId)) yearCards.push(cardId);
+          }
+          newTimeline[i] = { ...newTimeline[i], cards: yearCards };
+        }
+        onUpdateTimeline(newTimeline);
+      };
 
       const simulation = useMemo(
-        () => computeSimulation({
-          initialData: initialLeadData,
-          currentData: leadData,
-          startYear: startYear,
-          cards
-        }),
-        [leadData, initialLeadData, cards, startYear]
+        () => computeSimulation({ timeline }),
+        [timeline]
       );
 
-      // Baseline for comparisons is always "Status Quo" with no cards
-      const baselineSimulation = useMemo(
-        () => computeSimulation({
-          initialData: initialLeadData,
-          currentData: initialLeadData,
-          startYear: 1,
-          cards: []
-        }),
-        [initialLeadData]
-      );
+      // Baseline timeline: All years = initial inputs, no cards
+      const baselineSimulation = useMemo(() => {
+        const baseTimeline = Array(10).fill({ inputs: initialLeadData, cards: [] });
+        return computeSimulation({ timeline: baseTimeline });
+      }, [initialLeadData]);
 
       const portfolioNow = simulation.portfolioValues[9].value;
       const annualProfitNow = simulation.annualProfits[9].value;
       const annualDividend = annualProfitNow;
-      const monthlyReserve = simulation.monthlyReserve;
-      const monthlyDeals = simulation.monthlyDeals;
-      const incentiveLift =
-        annualProfitNow - baselineSimulation.annualProfits[9].value;
-      const programName = (leadData.dealerName || "Your Dealer Group") + " Financing";
+      const incentiveLift = annualProfitNow - baselineSimulation.annualProfits[9].value;
 
       return (
         <div className="h-full overflow-y-auto p-6 md:p-8 lg:p-12 space-y-8 animate-floatIn">
@@ -873,7 +882,7 @@
                 Simulation Dashboard
               </p>
               <h2 className="font-display text-3xl md:text-5xl text-sand">
-                {leadData.dealerName || "Your Dealer Group"}
+                {activeInputs.dealerName || "Your Dealer Group"}
               </h2>
             </div>
           </div>
@@ -890,21 +899,21 @@
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10 mb-8">
                   <div>
                     <h3 className="font-display text-2xl text-sand">
-                      Program Dynamics
+                      Program Timeline
                     </h3>
                     <p className="text-xs uppercase tracking-[0.3em] text-sand/60 mt-1">
-                      Impact of Strategy Over Time
+                      Editing Year {focusYear} (Changes propagate forward)
                     </p>
                   </div>
 
                   <div className="w-full md:w-64">
                     <SliderInput
-                      label={`Implementation Year: ${startYear}`}
-                      value={startYear}
+                      label={`Editing Year: ${focusYear}`}
+                      value={focusYear}
                       min={1}
                       max={10}
                       step={1}
-                      onChange={setStartYear}
+                      onChange={setFocusYear}
                     />
                   </div>
                 </div>
@@ -912,7 +921,7 @@
                 <div className="grid gap-8">
                   {/* CHART 1: Strategy Metrics */}
                   <div className="h-48 w-full border-b border-white/5 pb-8">
-                    <DualAxisLineChart data={simulation.monthlyData} startYear={startYear} />
+                    <DualAxisLineChart data={simulation.monthlyData} focusYear={focusYear} />
                   </div>
 
                   {/* CHART 2: Wealth Stack */}
@@ -928,68 +937,54 @@
               <div className="grid md:grid-cols-2 gap-8">
                 <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
                   <p className="text-xs uppercase tracking-[0.3em] text-sand/60 mb-4">
-                    Strategy Deck
+                    Strategy Deck (Year {focusYear}+)
                   </p>
                   <div className="space-y-3 h-80 overflow-y-auto pr-2 custom-scrollbar">
                     {strategyCards.map((card) => (
                       <ToggleCard
                         key={card.id}
                         card={card}
-                        active={cards.includes(card.id)}
-                        onToggle={onToggleCard}
+                        active={activeCards.includes(card.id)}
+                        onToggle={handleCardToggle}
                       />
                     ))}
                   </div>
                 </div>
                 <div className="rounded-3xl border border-white/10 bg-white/5 p-6 space-y-6">
                   <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
-                    Scenario Inputs (Year {startYear}+)
+                    Scenario Inputs (Year {focusYear}+)
                   </p>
                   <SliderInput
                     label="APR"
-                    value={leadData.apr}
+                    value={activeInputs.apr}
                     min={6}
                     max={20}
                     step={0.25}
-                    onChange={(value) =>
-                      leadData.setLeadData({ ...leadData, apr: value })
-                    }
+                    onChange={(val) => handleInputChange("apr", val)}
                   />
                   <SliderInput
                     label="F&I Incentive %"
-                    value={leadData.fiIncentive}
+                    value={activeInputs.fiIncentive}
                     min={0}
                     max={30}
                     step={1}
-                    onChange={(value) =>
-                      leadData.setLeadData({
-                        ...leadData,
-                        fiIncentive: value,
-                      })
-                    }
+                    onChange={(val) => handleInputChange("fiIncentive", val)}
                   />
                   <SliderInput
                     label="Avg Loan"
-                    value={leadData.avgLoan}
+                    value={activeInputs.avgLoan}
                     min={5000}
                     max={45000}
                     step={500}
-                    onChange={(value) =>
-                      leadData.setLeadData({ ...leadData, avgLoan: value })
-                    }
+                    onChange={(val) => handleInputChange("avgLoan", val)}
                   />
                   <SliderInput
                     label="Annual Volume"
-                    value={leadData.annualVolume}
+                    value={activeInputs.annualVolume}
                     min={100}
                     max={10000}
                     step={50}
-                    onChange={(value) =>
-                      leadData.setLeadData({
-                        ...leadData,
-                        annualVolume: value,
-                      })
-                    }
+                    onChange={(val) => handleInputChange("annualVolume", val)}
                   />
                 </div>
               </div>
@@ -1027,10 +1022,7 @@
                   Cash Flow Distribution
                 </p>
                 <div className="mt-4">
-                  <BarChart data={simulation.annualProfits} />
-                </div>
-                <div className="mt-4 text-xs text-sand/60 text-center">
-                  Annual Net Dealer Profit (Years 1-10)
+                  <CashFlowTable data={simulation.annualProfits} />
                 </div>
               </div>
 
@@ -1094,23 +1086,22 @@
         fiIncentive: 10,
       });
 
-      // --- Store baseline when entering dashboard ---
+      // --- Timeline State: Array of 10 Years ---
+      const [timeline, setTimeline] = useState(null);
       const [initialLeadData, setInitialLeadData] = useState(null);
-
-      const [cards, setCards] = useState([]);
 
       const containerStyles =
         "h-full w-full bg-[radial-gradient(circle_at_top,_rgba(124,212,230,0.12),_transparent_55%),radial-gradient(circle_at_bottom,_rgba(241,90,41,0.2),_transparent_50%),linear-gradient(120deg,_#0E1A24,_#0F2D2E)]";
 
-      const handleToggleCard = (id) => {
-        setCards((prev) =>
-          prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-        );
-      };
-
       const handleNextStep = () => {
         if (step === 2) {
-          // Snapshot data before entering dashboard
+          // Initialize timeline state when entering dashboard
+          // Each year (1-10) starts with the data captured in Step 2 and NO cards
+          const initTimeline = Array(10).fill(null).map(() => ({
+            inputs: { ...leadData }, // Deep copy inputs
+            cards: []                // Empty cards
+          }));
+          setTimeline(initTimeline);
           setInitialLeadData({ ...leadData });
         }
         setStep(step + 1);
@@ -1140,12 +1131,11 @@
                   onNext={handleNextStep}
                 />
               )}
-              {step === 3 && initialLeadData && (
+              {step === 3 && timeline && (
                 <Dashboard
-                  leadData={{ ...leadData, setLeadData }}
+                  timeline={timeline}
+                  onUpdateTimeline={setTimeline}
                   initialLeadData={initialLeadData}
-                  cards={cards}
-                  onToggleCard={handleToggleCard}
                 />
               )}
             </div>
