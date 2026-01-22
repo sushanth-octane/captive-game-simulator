@@ -573,18 +573,7 @@
       </button>
     );
 
-    const StepIndicator = ({ step, current }) => (
-      <div className="flex items-center gap-3">
-        <div
-          className={`h-3 w-3 rounded-full transition-colors duration-500 ${current >= step ? "bg-ember shadow-[0_0_10px_rgba(241,90,41,0.5)]" : "bg-white/20"
-            }`}
-        />
-        <span className={`text-xs uppercase tracking-[0.3em] transition-colors duration-500 ${current >= step ? "text-sand" : "text-sand/30"
-          }`}>
-          Step {step}
-        </span>
-      </div>
-    );
+    
 
     const Splash = ({ onStart }) => (
       <div className="h-full flex flex-col justify-between p-8 md:p-12 animate-floatIn">
@@ -651,9 +640,6 @@
       <div className="h-full flex flex-col justify-between p-6 md:p-12 animate-floatIn overflow-y-auto">
         <div className="flex items-start justify-between mb-8">
           <div>
-            <p className="uppercase tracking-[0.3em] text-sand/60 text-xs mb-2">
-              Step 2 — Qualification
-            </p>
             <h2 className="font-display text-4xl md:text-5xl text-sand">
               Calibrate the Simulation
             </h2>
@@ -1113,15 +1099,6 @@
           <div className="absolute inset-0 opacity-30 bg-[linear-gradient(120deg,rgba(255,255,255,0.04)_0%,rgba(255,255,255,0)_55%)] pointer-events-none" />
           <div className="absolute inset-0 animate-shimmer pointer-events-none" />
           <div className="relative h-full flex flex-col">
-            <div className="flex-none p-8 flex gap-4 z-20">
-              {[1, 2, 3].map((stepIndex) => (
-                <StepIndicator
-                  key={stepIndex}
-                  step={stepIndex}
-                  current={step}
-                />
-              ))}
-            </div>
             <div className="flex-1 overflow-hidden relative">
               {step === 1 && <Splash onStart={() => setStep(2)} />}
               {step === 2 && (
