@@ -130,7 +130,60 @@
       baseYield: 0.04,
       dealerShare: 0.6,
       runoff: 0.3,
-      baseApr: 12,
+      // Updated to match "hackathon sheet - APR effect.csv" Baseline
+      baseApr: 13.18,
+    };
+
+    // Data from "hackathon sheet - APR effect.csv"
+    // Normalized to multipliers relative to the Baseline (0.00 delta)
+    // Baseline Vol = 38.45, Baseline Spread = 7.83
+    const elasticityData = [
+      { delta: -2.00, vol: 66.52, spread: 3.29 },
+      { delta: -1.75, vol: 62.78, spread: 3.90 },
+      { delta: -1.50, vol: 58.57, spread: 4.51 },
+      { delta: -1.25, vol: 55.49, spread: 4.99 },
+      { delta: -1.00, vol: 50.28, spread: 5.46 },
+      { delta: -0.75, vol: 47.23, spread: 5.92 },
+      { delta: -0.50, vol: 43.33, spread: 6.60 },
+      { delta: -0.25, vol: 40.63, spread: 7.23 },
+      { delta: 0.00, vol: 38.45, spread: 7.83 }, // Baseline
+      { delta: 0.25, vol: 35.19, spread: 8.49 },
+      { delta: 0.50, vol: 31.16, spread: 9.06 },
+    ];
+
+    const getElasticityMultipliers = (aprDelta) => {
+      // Clamp input to data range
+      const maxDelta = elasticityData[elasticityData.length - 1].delta;
+      const minDelta = elasticityData[0].delta;
+      const safeDelta = Math.min(Math.max(aprDelta, minDelta), maxDelta);
+
+      // Find nearest points
+      let lower = elasticityData[0];
+      let upper = elasticityData[elasticityData.length - 1];
+
+      for (let i = 0; i < elasticityData.length - 1; i++) {
+        if (safeDelta >= elasticityData[i].delta && safeDelta <= elasticityData[i + 1].delta) {
+          lower = elasticityData[i];
+          upper = elasticityData[i + 1];
+          break;
+        }
+      }
+
+      // Linear Interpolation
+      const range = upper.delta - lower.delta;
+      const progress = range === 0 ? 0 : (safeDelta - lower.delta) / range;
+
+      const volVal = lower.vol + (upper.vol - lower.vol) * progress;
+      const spreadVal = lower.spread + (upper.spread - lower.spread) * progress;
+
+      // Baseline values for normalization
+      const baseVol = 38.45;
+      const baseSpread = 7.83;
+
+      return {
+        volumeMult: volVal / baseVol,
+        yieldMult: spreadVal / baseSpread
+      };
     };
 
     const strategyCards = [
@@ -233,7 +286,8 @@
 
         let currentVolumeMult = 1 + activeCards.reduce((sum, card) => sum + card.volume, 0);
         let currentReserveMult = 1 + activeCards.reduce((sum, card) => sum + card.reserve, 0);
-        let currentYieldMult = 1 + activeCards.reduce((sum, card) => sum + card.yield, 0);
+        // Base yield mult from cards (e.g. Rate Buydown strategy penalty)
+        let cardYieldMult = 1 + activeCards.reduce((sum, card) => sum + card.yield, 0);
 
         // --- 3. Apply Input Variables & Adjustments ---
         const {
@@ -241,16 +295,23 @@
           apr, firstLook, fiIncentive
         } = inputs;
 
-        // Price Elasticity
+        // Price Elasticity (Using CSV Data)
         const aprDelta = apr - baseAssumptions.baseApr;
-        currentVolumeMult *= 1 - aprDelta * 0.03;
-        currentYieldMult *= 1 + aprDelta * 0.04;
+        const elasticity = getElasticityMultipliers(aprDelta);
+
+        currentVolumeMult *= elasticity.volumeMult;
+
+        // Yield Calculation: 
+        // Start with Base Yield
+        // Apply Card Impact
+        // Apply CSV Spread Elasticity (which handles the APR effect on spread)
+        let currentYield = baseAssumptions.baseYield * cardYieldMult * elasticity.yieldMult;
 
         // First Look Impact
         let runoff = baseAssumptions.runoff;
         if (firstLook) {
           currentVolumeMult *= 1.08;
-          currentYieldMult *= 1.06;
+          currentYield *= 1.06;
           runoff -= 0.02;
         }
 
@@ -258,12 +319,12 @@
         const incentiveFactor = fiIncentive / 100;
         currentVolumeMult *= 1 + incentiveFactor * 0.6;
         currentReserveMult *= 1 + incentiveFactor;
-        currentYieldMult *= 1 + incentiveFactor * 0.4;
+        currentYield *= 1 + incentiveFactor * 0.4;
 
         // Seasonality & Events
         if (hasSeasonalPromos && (monthOfYear === 5 || monthOfYear === 11)) {
           currentVolumeMult *= 1.4;
-          currentYieldMult *= 0.9;
+          currentYield *= 0.9;
         }
         // Standard seasonality removed as requested
 
@@ -271,7 +332,6 @@
         const monthlyVolumeBase = annualVolume / 12;
         const adjustedVolume = monthlyVolumeBase * clamp(currentVolumeMult, 0.2, 3.0);
         const adjustedReserve = baseAssumptions.baseReserve * currentReserveMult;
-        const adjustedYield = baseAssumptions.baseYield * currentYieldMult + (apr - baseAssumptions.baseApr) * 0.002;
         const adjustedRunoff = clamp(runoff, 0.15, 0.5);
 
         const originations = adjustedVolume * avgLoan;
@@ -280,7 +340,7 @@
         portfolio = portfolio - runoffAmount + originations;
 
         const reserveIncome = originations * adjustedReserve;
-        const yieldIncome = portfolio * (adjustedYield / 12);
+        const yieldIncome = portfolio * (currentYield / 12);
         const grossProfit = reserveIncome + yieldIncome;
         const dealerProfit = grossProfit * baseAssumptions.dealerShare;
         const incentiveCost = adjustedVolume * earningPerVehicle * incentiveFactor;
@@ -391,12 +451,12 @@
           </svg>
 
           <div className="absolute -top-2 left-2 text-[10px] text-ember font-bold tracking-widest bg-ink/80 px-1 rounded">APR %</div>
-          <div className="absolute -top-2 right-2 text-[10px] text-sky font-bold tracking-widest bg-ink/80 px-1 rounded">VOL MULT</div>
+          <div className="absolute -top-2 right-2 text-[10px] text-sky font-bold tracking-widest bg-ink/80 px-1 rounded">PENETRATION RATE</div>
 
           <div className="absolute top-4 left-0 text-[9px] text-ember/60 font-mono">20%</div>
           <div className="absolute bottom-6 left-0 text-[9px] text-ember/60 font-mono">0%</div>
-          <div className="absolute top-4 right-0 text-[9px] text-sky/60 font-mono">3.0x</div>
-          <div className="absolute bottom-6 right-0 text-[9px] text-sky/60 font-mono">0x</div>
+          <div className="absolute top-4 right-0 text-[9px] text-sky/60 font-mono">40%</div>
+          <div className="absolute bottom-6 right-0 text-[9px] text-sky/60 font-mono">0%</div>
 
           <div className="absolute bottom-0 left-0 w-full flex justify-between px-1 text-[10px] text-sand/40 font-mono pt-2 border-t border-white/5">
             <span>Yr 1</span>
@@ -573,19 +633,19 @@
       </button>
     );
 
-    
+
 
     const Splash = ({ onStart }) => (
       <div className="h-full flex flex-col">
         {/* Background image container */}
-        <div 
+        <div
           className="flex-1 bg-cover bg-center bg-no-repeat"
           style={{ backgroundImage: 'url("iPad-Pro-12.9_---39.gif")' }}
         >
           {/* Optional overlay for better contrast */}
           <div className="w-full h-full bg-black/10"></div>
         </div>
-        
+
         {/* Action button below the image */}
         <div className="flex-none p-8 flex flex-col items-center bg-gradient-to-t from-ink/95 via-ink/80 to-transparent">
           <button
