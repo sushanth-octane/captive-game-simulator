@@ -1,1 +1,1114 @@
-<!-- This is a test html page -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Captive Lending Simulator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              display: ["Bebas Neue", "ui-sans-serif", "system-ui"],
+              body: ["IBM Plex Sans", "ui-sans-serif", "system-ui"],
+              mono: ["IBM Plex Mono", "ui-monospace", "SFMono-Regular"],
+            },
+            colors: {
+              ink: "#0E1A24",
+              surf: "#0F2D2E",
+              sand: "#F6F1E8",
+              ember: "#F15A29",
+              brass: "#D4A017",
+              moss: "#3A7D44",
+              sky: "#7CD4E6",
+            },
+            boxShadow: {
+              glow: "0 10px 40px rgba(241, 90, 41, 0.25)",
+            },
+            keyframes: {
+              floatIn: {
+                "0%": { transform: "translateY(18px)", opacity: "0" },
+                "100%": { transform: "translateY(0)", opacity: "1" },
+              },
+              shimmer: {
+                "0%": { backgroundPosition: "0% 50%" },
+                "100%": { backgroundPosition: "100% 50%" },
+              },
+            },
+            animation: {
+              floatIn: "floatIn 800ms ease-out both",
+              shimmer: "shimmer 5s ease-in-out infinite alternate",
+            },
+          },
+        },
+      };
+    </script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <style>
+      * {
+        -webkit-tap-highlight-color: transparent;
+      }
+      html,
+      body {
+        height: 100%;
+        background: #0e1a24;
+        color: #f6f1e8;
+        font-family: "IBM Plex Sans", ui-sans-serif, system-ui;
+        user-select: none;
+        touch-action: manipulation;
+        overflow: hidden;
+      }
+      #root {
+        height: 100%;
+      }
+      ::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel">
+      const { useMemo, useState, useEffect } = React;
+
+      const baseAssumptions = {
+        baseReserve: 0.02,
+        baseYield: 0.04,
+        dealerShare: 0.6,
+        runoff: 0.3,
+        baseApr: 12,
+      };
+
+      const strategyCards = [
+        {
+          id: "no-pay",
+          name: "90-Day No Pay",
+          description: "Deferred payment campaign",
+          volume: 0.15,
+          reserve: 0,
+          yield: -0.02,
+        },
+        {
+          id: "buydown",
+          name: "Rate Buydown",
+          description: "Lower interest rates",
+          volume: 0.25,
+          reserve: -0.2,
+          yield: -0.15,
+        },
+        {
+          id: "protection",
+          name: "F&I Protection",
+          description: "Warranty/GAP focus",
+          volume: -0.05,
+          reserve: 0.3,
+          yield: 0.05,
+        },
+        {
+          id: "dealer-reserve",
+          name: "Dealer Reserve",
+          description: "Hold rate and optimize reserve",
+          volume: 0.1,
+          reserve: 0.15,
+          yield: 0.08,
+        },
+        {
+          id: "lifecycle",
+          name: "Lifecycle Marketing",
+          description: "Service coupons + retention outreach",
+          volume: 0.08,
+          reserve: 0.05,
+          yield: 0.02,
+        },
+        {
+          id: "limited-promos",
+          name: "Limited-Time Promos",
+          description: "NINP + seasonal campaigns",
+          volume: 0.12,
+          reserve: -0.05,
+          yield: -0.01,
+        },
+        {
+          id: "prequal",
+          name: "Prequal Integration",
+          description: "Digital prequal funnel",
+          volume: 0.1,
+          reserve: 0.05,
+          yield: 0.03,
+        },
+      ];
+
+      const formatCurrency = (value, digits = 0) =>
+        new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency: "USD",
+          maximumFractionDigits: digits,
+        }).format(value);
+
+      const formatCompact = (value) =>
+        new Intl.NumberFormat("en-US", {
+          notation: "compact",
+          maximumFractionDigits: 1,
+        }).format(value);
+
+      const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+      const computeSimulation = ({
+        annualVolume,
+        avgLoan,
+        stores,
+        frontendGross,
+        earningPerVehicle,
+        apr,
+        firstLook,
+        fiIncentive,
+        cards,
+      }) => {
+        const activeCards = strategyCards.filter((card) =>
+          cards.includes(card.id)
+        );
+        let volumeMultiplier =
+          1 + activeCards.reduce((sum, card) => sum + card.volume, 0);
+        let reserveMultiplier =
+          1 + activeCards.reduce((sum, card) => sum + card.reserve, 0);
+        let yieldMultiplier =
+          1 + activeCards.reduce((sum, card) => sum + card.yield, 0);
+        let runoff = baseAssumptions.runoff;
+
+        const aprDelta = apr - baseAssumptions.baseApr;
+        volumeMultiplier *= 1 - aprDelta * 0.03;
+        yieldMultiplier *= 1 + aprDelta * 0.04;
+
+        if (firstLook) {
+          volumeMultiplier *= 1.08;
+          yieldMultiplier *= 1.06;
+          runoff -= 0.02;
+        }
+
+        const incentiveFactor = fiIncentive / 100;
+        volumeMultiplier *= 1 + incentiveFactor * 0.6;
+        reserveMultiplier *= 1 + incentiveFactor;
+        yieldMultiplier *= 1 + incentiveFactor * 0.4;
+
+        const adjustedVolume = annualVolume * clamp(volumeMultiplier, 0.4, 2.2);
+        const adjustedReserve = baseAssumptions.baseReserve * reserveMultiplier;
+        const adjustedYield =
+          baseAssumptions.baseYield * yieldMultiplier + aprDelta * 0.002;
+        const adjustedRunoff = clamp(runoff, 0.15, 0.5);
+
+        let portfolio = 0;
+        const portfolioValues = [];
+        const annualProfits = [];
+        const annualReserves = [];
+        const annualIncentives = [];
+
+        for (let year = 1; year <= 10; year += 1) {
+          const originations = adjustedVolume * avgLoan;
+          const runoffAmount = portfolio * adjustedRunoff;
+          portfolio = portfolio - runoffAmount + originations;
+
+          const reserveIncome = originations * adjustedReserve;
+          const yieldIncome = portfolio * adjustedYield;
+          const grossProfit = reserveIncome + yieldIncome;
+          const dealerProfit = grossProfit * baseAssumptions.dealerShare;
+          const incentiveCost = adjustedVolume * earningPerVehicle * incentiveFactor;
+          const netDealerProfit = dealerProfit - incentiveCost;
+
+          portfolioValues.push({ year, value: portfolio });
+          annualProfits.push({ year, value: netDealerProfit });
+          annualReserves.push({ year, value: reserveIncome });
+          annualIncentives.push({ year, value: incentiveCost });
+        }
+
+        const ppu =
+          annualVolume > 0
+            ? (annualProfits[annualProfits.length - 1].value / annualVolume) * 12
+            : 0;
+        const normalizedPPU = clamp(ppu / 1500, 0, 1);
+        const score = Math.round(normalizedPPU * 100);
+
+        const monthlyReserve = annualReserves.reduce(
+          (sum, item) => sum + item.value,
+          0
+        ) /
+          (annualReserves.length * 12);
+        const monthlyDeals = adjustedVolume / 12;
+        const averageUnitEarnings = frontendGross + earningPerVehicle;
+        const monthlyProduction = Array.from({ length: 12 }, (_, index) => {
+          const seasonality = 1 + 0.08 * Math.sin((index / 12) * Math.PI * 2);
+          return {
+            month: index + 1,
+            value: monthlyDeals * averageUnitEarnings * seasonality,
+          };
+        });
+        const annualIncentiveCost = annualIncentives.reduce(
+          (sum, item) => sum + item.value,
+          0
+        ) / annualIncentives.length;
+
+        return {
+          adjustedVolume,
+          adjustedReserve,
+          adjustedYield,
+          portfolioValues,
+          annualProfits,
+          score,
+          monthlyReserve,
+          monthlyDeals,
+          monthlyProduction,
+          annualIncentiveCost,
+        };
+      };
+
+      const LineChart = ({ data }) => {
+        const maxValue = Math.max(...data.map((d) => d.value), 1);
+        const points = data
+          .map((d, i) => {
+            const x = (i / (data.length - 1)) * 100;
+            const y = 100 - (d.value / maxValue) * 100;
+            return `${x},${y}`;
+          })
+          .join(" ");
+
+        return (
+          <svg viewBox="0 0 100 100" className="w-full h-full">
+            <defs>
+              <linearGradient id="lineGlow" x1="0" x2="1">
+                <stop offset="0%" stopColor="#F15A29" stopOpacity="0.1" />
+                <stop offset="100%" stopColor="#F15A29" stopOpacity="0.9" />
+              </linearGradient>
+            </defs>
+            <polyline
+              points={points}
+              fill="none"
+              stroke="url(#lineGlow)"
+              strokeWidth="2.4"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+            {data.map((d, i) => {
+              const x = (i / (data.length - 1)) * 100;
+              const y = 100 - (d.value / maxValue) * 100;
+              return (
+                <circle
+                  key={d.year}
+                  cx={x}
+                  cy={y}
+                  r="1.5"
+                  fill="#7CD4E6"
+                />
+              );
+            })}
+          </svg>
+        );
+      };
+
+      const BarChart = ({ data }) => {
+        const maxValue = Math.max(...data.map((d) => d.value), 1);
+        return (
+          <div className="flex items-end gap-2 h-32">
+            {data.map((d) => (
+              <div
+                key={d.year}
+                className="flex-1 rounded-full bg-emerald-400/70"
+                style={{ height: `${(d.value / maxValue) * 100}%` }}
+                title={`Year ${d.year}: ${formatCurrency(d.value)}`}
+              />
+            ))}
+          </div>
+        );
+      };
+
+      const MiniBarChart = ({ data }) => {
+        const maxValue = Math.max(...data.map((d) => d.value), 1);
+        return (
+          <div className="flex items-end gap-1 h-24">
+            {data.map((d) => (
+              <div
+                key={d.month}
+                className="flex-1 rounded-full bg-sky/80"
+                style={{ height: `${(d.value / maxValue) * 100}%` }}
+                title={`Month ${d.month}: ${formatCurrency(d.value)}`}
+              />
+            ))}
+          </div>
+        );
+      };
+
+      const SliderInput = ({ label, value, min, max, step, onChange }) => (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm uppercase tracking-[0.2em] text-sand/70">
+              {label}
+            </p>
+            <p className="font-mono text-lg text-sand">{value}</p>
+          </div>
+          <input
+            type="range"
+            className="w-full accent-ember"
+            min={min}
+            max={max}
+            step={step}
+            value={value}
+            onChange={(event) => onChange(Number(event.target.value))}
+          />
+        </div>
+      );
+
+      const ToggleCard = ({ card, active, onToggle }) => (
+        <button
+          type="button"
+          onClick={() => onToggle(card.id)}
+          className={`w-full text-left rounded-2xl border px-4 py-4 transition-all duration-300 ${
+            active
+              ? "border-ember bg-ember/20 shadow-glow"
+              : "border-sand/10 bg-white/5 hover:border-sand/30"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <h4 className="font-display text-xl tracking-wide">
+                {card.name}
+              </h4>
+              <p className="text-sm text-sand/70">{card.description}</p>
+            </div>
+            <div className="text-right text-xs uppercase tracking-[0.2em]">
+              <div>Vol {card.volume > 0 ? "+" : ""}{Math.round(card.volume * 100)}%</div>
+              <div>Res {card.reserve > 0 ? "+" : ""}{Math.round(card.reserve * 100)}%</div>
+              <div>Yield {card.yield > 0 ? "+" : ""}{Math.round(card.yield * 100)}%</div>
+            </div>
+          </div>
+        </button>
+      );
+
+      const StepIndicator = ({ step, current }) => (
+        <div className="flex items-center gap-3">
+          <div
+            className={`h-3 w-3 rounded-full ${
+              current >= step ? "bg-ember" : "bg-white/20"
+            }`}
+          />
+          <span className="text-xs uppercase tracking-[0.3em] text-sand/70">
+            Step {step}
+          </span>
+        </div>
+      );
+
+      const Splash = ({ onStart }) => (
+        <div className="h-full flex flex-col justify-between p-8 md:p-12">
+          <header className="flex items-start justify-between">
+            <div>
+              <p className="uppercase tracking-[0.4em] text-sand/70 text-xs">
+                Captive Lending Simulator
+              </p>
+              <h1 className="font-display text-5xl md:text-7xl text-sand">
+                Turn Deals Into a 10-Year Asset Engine
+              </h1>
+            </div>
+            <div className="text-right text-xs uppercase tracking-[0.3em] text-sand/50">
+              Offline Ready<br />10-Year View
+            </div>
+          </header>
+          <div className="grid md:grid-cols-2 gap-8 items-center">
+            <div className="space-y-6">
+              <p className="text-lg text-sand/80 leading-relaxed">
+                Replace the spreadsheet with a tactile, high-impact simulation
+                that shows how captive lending builds wealth over a decade.
+              </p>
+              <ul className="space-y-3 text-sand/70">
+                <li>Instant portfolio growth forecast</li>
+                <li>Strategy deck to stress-test assumptions</li>
+                <li>Role-based insights for owners and finance leaders</li>
+              </ul>
+              <button
+                className="mt-6 inline-flex items-center justify-center rounded-full bg-ember px-8 py-4 text-lg font-semibold text-white shadow-glow transition-transform hover:-translate-y-1"
+                onClick={onStart}
+              >
+                Start Simulation
+              </button>
+            </div>
+            <div className="relative">
+              <div className="rounded-3xl bg-gradient-to-br from-ember/90 via-brass/60 to-sky/60 p-1">
+                <div className="rounded-[1.3rem] bg-ink/90 p-6">
+                  <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                    10-Year Portfolio Value
+                  </p>
+                  <p className="font-display text-5xl text-sand">
+                    {formatCurrency(42000000, 0)}
+                  </p>
+                  <div className="mt-4 h-28 rounded-2xl bg-white/5 p-3">
+                    <LineChart
+                      data={Array.from({ length: 10 }, (_, i) => ({
+                        year: i + 1,
+                        value: 1200000 * (i + 1) * 0.9,
+                      }))}
+                    />
+                  </div>
+                  <p className="mt-4 text-sm text-sand/70">
+                    Powered by dealer cash flow + interest margin.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+
+      const LeadCapture = ({ data, onChange, onNext }) => (
+        <div className="h-full flex flex-col justify-between p-8 md:p-12">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="uppercase tracking-[0.3em] text-sand/60 text-xs">
+                Step 2 — Qualification
+              </p>
+              <h2 className="font-display text-4xl md:text-5xl">
+                Calibrate the Simulation
+              </h2>
+            </div>
+            <div className="text-right text-xs uppercase tracking-[0.3em] text-sand/50">
+              Avg input time<br />60 seconds
+            </div>
+          </div>
+          <div className="grid md:grid-cols-2 gap-8">
+            <div className="space-y-6">
+              <div className="grid sm:grid-cols-2 gap-4">
+                <label className="block text-sm uppercase tracking-[0.2em] text-sand/60 sm:col-span-2">
+                  Dealer Group Name
+                  <input
+                    type="text"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-lg text-sand focus:border-ember focus:outline-none"
+                    value={data.dealerName}
+                    onChange={(event) =>
+                      onChange({ ...data, dealerName: event.target.value })
+                    }
+                  />
+                </label>
+                <label className="block text-sm uppercase tracking-[0.2em] text-sand/60">
+                  Location
+                  <input
+                    type="text"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-lg text-sand focus:border-ember focus:outline-none"
+                    value={data.location}
+                    onChange={(event) =>
+                      onChange({ ...data, location: event.target.value })
+                    }
+                  />
+                </label>
+                <label className="block text-sm uppercase tracking-[0.2em] text-sand/60">
+                  Email
+                  <input
+                    type="email"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-lg text-sand focus:border-ember focus:outline-none"
+                    value={data.email}
+                    onChange={(event) =>
+                      onChange({ ...data, email: event.target.value })
+                    }
+                  />
+                </label>
+                <label className="block text-sm uppercase tracking-[0.2em] text-sand/60">
+                  Number of Stores
+                  <input
+                    type="number"
+                    min="1"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-lg text-sand focus:border-ember focus:outline-none"
+                    value={data.stores}
+                    onChange={(event) =>
+                      onChange({
+                        ...data,
+                        stores: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <label className="block text-sm uppercase tracking-[0.2em] text-sand/60">
+                  Annual Used Car Volume
+                  <input
+                    type="number"
+                    min="100"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-lg text-sand focus:border-ember focus:outline-none"
+                    value={data.annualVolume}
+                    onChange={(event) =>
+                      onChange({
+                        ...data,
+                        annualVolume: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <label className="block text-sm uppercase tracking-[0.2em] text-sand/60">
+                  Average Loan Amount
+                  <input
+                    type="number"
+                    min="1000"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-lg text-sand focus:border-ember focus:outline-none"
+                    value={data.avgLoan}
+                    onChange={(event) =>
+                      onChange({
+                        ...data,
+                        avgLoan: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <label className="block text-sm uppercase tracking-[0.2em] text-sand/60">
+                  Avg Frontend Gross
+                  <input
+                    type="number"
+                    min="500"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-lg text-sand focus:border-ember focus:outline-none"
+                    value={data.frontendGross}
+                    onChange={(event) =>
+                      onChange({
+                        ...data,
+                        frontendGross: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <label className="block text-sm uppercase tracking-[0.2em] text-sand/60">
+                  Earnings per Vehicle
+                  <input
+                    type="number"
+                    min="200"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-lg text-sand focus:border-ember focus:outline-none"
+                    value={data.earningPerVehicle}
+                    onChange={(event) =>
+                      onChange({
+                        ...data,
+                        earningPerVehicle: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-white/5 via-white/0 to-ember/10 p-6">
+              <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                Your Program Snapshot
+              </p>
+              <div className="mt-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sand/70">Program Name</span>
+                  <span className="font-semibold text-sand">
+                    {(data.dealerName || "Dealer Group") + " Financing"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sand/70">Total Annual Volume</span>
+                  <span className="font-semibold text-sand">
+                    {formatCompact(data.annualVolume)} units
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sand/70">Total Originations</span>
+                  <span className="font-semibold text-sand">
+                    {formatCurrency(data.annualVolume * data.avgLoan, 0)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sand/70">Stores</span>
+                  <span className="font-semibold text-sand">
+                    {data.stores}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sand/70">Avg Frontend Gross</span>
+                  <span className="font-semibold text-sand">
+                    {formatCurrency(data.frontendGross, 0)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sand/70">Earnings per Vehicle</span>
+                  <span className="font-semibold text-sand">
+                    {formatCurrency(data.earningPerVehicle, 0)}
+                  </span>
+                </div>
+              </div>
+              <button
+                className="mt-8 w-full rounded-full bg-ember py-3 text-base font-semibold text-white"
+                onClick={onNext}
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+
+      const RoleSelect = ({ role, onSelect, onNext }) => (
+        <div className="h-full flex flex-col justify-between p-8 md:p-12">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="uppercase tracking-[0.3em] text-sand/60 text-xs">
+                Step 3 — Perspective
+              </p>
+              <h2 className="font-display text-4xl md:text-5xl">
+                Choose Your Role
+              </h2>
+            </div>
+            <div className="text-right text-xs uppercase tracking-[0.3em] text-sand/50">
+              Metrics tuned to your incentives
+            </div>
+          </div>
+          <div className="grid md:grid-cols-2 gap-6">
+            {[
+              {
+                id: "gm",
+                title: "General Manager / Dealer Principal",
+                subtitle: "Macro view for long-term equity",
+                focus: "10-Year Portfolio Value + Annual Dividends",
+              },
+              {
+                id: "fm",
+                title: "Finance Manager",
+                subtitle: "Operational view for monthly income",
+                focus: "Monthly Reserve + Deals Funded",
+              },
+            ].map((option) => (
+              <button
+                key={option.id}
+                className={`rounded-3xl border p-6 text-left transition-all ${
+                  role === option.id
+                    ? "border-ember bg-ember/10 shadow-glow"
+                    : "border-white/10 bg-white/5"
+                }`}
+                onClick={() => onSelect(option.id)}
+              >
+                <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                  {option.subtitle}
+                </p>
+                <h3 className="mt-2 font-display text-2xl text-sand">
+                  {option.title}
+                </h3>
+                <p className="mt-4 text-sm text-sand/70">{option.focus}</p>
+              </button>
+            ))}
+          </div>
+          <button
+            className="self-end rounded-full bg-ember px-8 py-3 text-base font-semibold text-white"
+            onClick={onNext}
+          >
+            Enter Dashboard
+          </button>
+        </div>
+      );
+
+      const Dashboard = ({ leadData, role, cards, onToggleCard }) => {
+        const simulation = useMemo(
+          () => computeSimulation({ ...leadData, cards }),
+          [leadData, cards]
+        );
+        const baselineSimulation = useMemo(
+          () => computeSimulation({ ...leadData, fiIncentive: 0, cards }),
+          [leadData, cards]
+        );
+
+        const portfolioNow = simulation.portfolioValues[9].value;
+        const annualProfitNow = simulation.annualProfits[9].value;
+        const annualDividend = annualProfitNow;
+        const monthlyReserve = simulation.monthlyReserve;
+        const monthlyDeals = simulation.monthlyDeals;
+        const incentiveLift =
+          annualProfitNow - baselineSimulation.annualProfits[9].value;
+        const programName = (leadData.dealerName || "Your Dealer Group") + " Financing";
+        const avgMonthlyProduction =
+          simulation.monthlyProduction.reduce((sum, item) => sum + item.value, 0) /
+          simulation.monthlyProduction.length;
+
+        return (
+          <div className="h-full overflow-y-auto p-8 md:p-12 space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                  Simulation Dashboard
+                </p>
+                <h2 className="font-display text-3xl md:text-4xl text-sand">
+                  {leadData.dealerName || "Your Dealer Group"}
+                </h2>
+              </div>
+              <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs uppercase tracking-[0.3em] text-sand/60">
+                {role === "gm" ? "GM Mode" : "FM Mode"}
+              </div>
+            </div>
+
+            <div className="grid lg:grid-cols-[2fr_1fr] gap-6">
+              <div className="space-y-6">
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="font-display text-2xl text-sand">
+                        10-Year Portfolio Growth
+                      </h3>
+                      <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                        {programName}
+                      </p>
+                    </div>
+                    <span className="text-sm text-sand/60">
+                      {formatCurrency(portfolioNow, 0)} projected
+                    </span>
+                  </div>
+                  <div className="mt-6 h-48">
+                    <LineChart data={simulation.portfolioValues} />
+                  </div>
+                  <div className="mt-6 grid grid-cols-3 gap-4 text-sm">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                        Adjusted Volume
+                      </p>
+                      <p className="text-lg font-semibold">
+                        {formatCompact(simulation.adjustedVolume)} units
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                        Reserve Rate
+                      </p>
+                      <p className="text-lg font-semibold">
+                        {(simulation.adjustedReserve * 100).toFixed(2)}%
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                        Interest Margin
+                      </p>
+                      <p className="text-lg font-semibold">
+                        {(simulation.adjustedYield * 100).toFixed(2)}%
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-display text-2xl text-sand">
+                      Monthly Production
+                    </h3>
+                    <span className="text-sm text-sand/60">
+                      {formatCurrency(avgMonthlyProduction, 0)} avg
+                    </span>
+                  </div>
+                  <div className="mt-4">
+                    <MiniBarChart data={simulation.monthlyProduction} />
+                  </div>
+                  <p className="mt-4 text-sm text-sand/60">
+                    Based on frontend gross + earnings per vehicle.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-3xl border border-white/10 bg-ink/80 p-5">
+                  <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                    Program Scorecard
+                  </p>
+                  <div className="mt-4 flex items-end justify-between">
+                    <p className="font-display text-5xl text-sand">
+                      {simulation.score}
+                    </p>
+                    <p className="text-sm text-sand/60">out of 100</p>
+                  </div>
+                  <div className="mt-4 h-2 w-full rounded-full bg-white/10">
+                    <div
+                      className="h-2 rounded-full bg-emerald-400"
+                      style={{ width: `${simulation.score}%` }}
+                    />
+                  </div>
+                </div>
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+                  <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                    F&amp;I Incentive Impact
+                  </p>
+                  <div className="mt-4 space-y-2 text-sm text-sand/70">
+                    <div className="flex items-center justify-between">
+                      <span>Annual incentive cost</span>
+                      <span className="font-semibold text-sand">
+                        {formatCurrency(simulation.annualIncentiveCost, 0)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Net profit lift</span>
+                      <span className="font-semibold text-emerald-300">
+                        {formatCurrency(incentiveLift, 0)}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs text-sand/60">
+                    Incentives cost money but drive higher-volume wins.
+                  </p>
+                </div>
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+                  <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                    Cash Flow Distribution
+                  </p>
+                  <div className="mt-4">
+                    <BarChart data={simulation.annualProfits} />
+                  </div>
+                  <div className="mt-4 text-sm text-sand/60">
+                    Net dividend (Year 10): {formatCurrency(annualDividend, 0)}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-[1.5fr_1fr] gap-6">
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-display text-2xl text-sand">
+                    Strategy Deck
+                  </h3>
+                  <span className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                    Tap to apply multipliers
+                  </span>
+                </div>
+                <div className="mt-4 grid gap-3">
+                  {strategyCards.map((card) => (
+                    <ToggleCard
+                      key={card.id}
+                      card={card}
+                      active={cards.includes(card.id)}
+                      onToggle={onToggleCard}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {role === "gm" ? (
+                  <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-ember/20 via-white/5 to-white/0 p-6">
+                    <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                      Owner Focus
+                    </p>
+                    <p className="mt-4 font-display text-4xl">
+                      {formatCurrency(portfolioNow, 0)}
+                    </p>
+                    <p className="text-sm text-sand/70">
+                      10-year portfolio value
+                    </p>
+                    <div className="mt-6">
+                      <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                        Annual Dividend
+                      </p>
+                      <p className="text-2xl font-semibold">
+                        {formatCurrency(annualDividend, 0)}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-sky/20 via-white/5 to-white/0 p-6">
+                    <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                      Finance Manager Focus
+                    </p>
+                    <p className="mt-4 font-display text-4xl">
+                      {formatCurrency(monthlyReserve, 0)}
+                    </p>
+                    <p className="text-sm text-sand/70">
+                      Monthly reserve income
+                    </p>
+                    <div className="mt-6">
+                      <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                        Deals Funded
+                      </p>
+                      <p className="text-2xl font-semibold">
+                        {monthlyDeals.toFixed(0)} / month
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
+                  <p className="text-xs uppercase tracking-[0.3em] text-sand/60">
+                    Baseline Inputs
+                  </p>
+                  <div className="mt-4 space-y-4">
+                    <SliderInput
+                      label="Annual Volume"
+                      value={leadData.annualVolume}
+                      min={100}
+                      max={10000}
+                      step={50}
+                      onChange={(value) =>
+                        leadData.setLeadData({
+                          ...leadData,
+                          annualVolume: value,
+                        })
+                      }
+                    />
+                    <SliderInput
+                      label="APR"
+                      value={leadData.apr}
+                      min={6}
+                      max={20}
+                      step={0.25}
+                      onChange={(value) =>
+                        leadData.setLeadData({ ...leadData, apr: value })
+                      }
+                    />
+                    <SliderInput
+                      label="Avg Loan"
+                      value={leadData.avgLoan}
+                      min={5000}
+                      max={45000}
+                      step={500}
+                      onChange={(value) =>
+                        leadData.setLeadData({ ...leadData, avgLoan: value })
+                      }
+                    />
+                    <SliderInput
+                      label="Avg Frontend Gross"
+                      value={leadData.frontendGross}
+                      min={500}
+                      max={4000}
+                      step={50}
+                      onChange={(value) =>
+                        leadData.setLeadData({
+                          ...leadData,
+                          frontendGross: value,
+                        })
+                      }
+                    />
+                    <SliderInput
+                      label="Earnings per Vehicle"
+                      value={leadData.earningPerVehicle}
+                      min={200}
+                      max={2500}
+                      step={50}
+                      onChange={(value) =>
+                        leadData.setLeadData({
+                          ...leadData,
+                          earningPerVehicle: value,
+                        })
+                      }
+                    />
+                    <SliderInput
+                      label="Stores"
+                      value={leadData.stores}
+                      min={1}
+                      max={20}
+                      step={1}
+                      onChange={(value) =>
+                        leadData.setLeadData({ ...leadData, stores: value })
+                      }
+                    />
+                    <SliderInput
+                      label="F&I Incentive %"
+                      value={leadData.fiIncentive}
+                      min={0}
+                      max={30}
+                      step={1}
+                      onChange={(value) =>
+                        leadData.setLeadData({
+                          ...leadData,
+                          fiIncentive: value,
+                        })
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        leadData.setLeadData({
+                          ...leadData,
+                          firstLook: !leadData.firstLook,
+                        })
+                      }
+                      className={`w-full rounded-full border px-4 py-3 text-left text-sm uppercase tracking-[0.2em] transition ${
+                        leadData.firstLook
+                          ? "border-emerald-400 bg-emerald-400/20 text-sand"
+                          : "border-white/10 bg-white/5 text-sand/70"
+                      }`}
+                    >
+                      First Look Program {leadData.firstLook ? "On" : "Off"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const App = () => {
+        const [step, setStep] = useState(1);
+        const [leadData, setLeadData] = useState({
+          dealerName: "",
+          location: "",
+          email: "",
+          annualVolume: 2400,
+          avgLoan: 22000,
+          stores: 3,
+          frontendGross: 1800,
+          earningPerVehicle: 900,
+          apr: 12,
+          firstLook: false,
+          fiIncentive: 10,
+        });
+        const [role, setRole] = useState("gm");
+        const [cards, setCards] = useState([]);
+
+        const containerStyles =
+          "h-full w-full bg-[radial-gradient(circle_at_top,_rgba(124,212,230,0.12),_transparent_55%),radial-gradient(circle_at_bottom,_rgba(241,90,41,0.2),_transparent_50%),linear-gradient(120deg,_#0E1A24,_#0F2D2E)]";
+
+        const handleToggleCard = (id) => {
+          setCards((prev) =>
+            prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+          );
+        };
+
+        return (
+          <div className={`${containerStyles} h-full`}
+               style={{ backgroundSize: "200% 200%" }}>
+            <div className="absolute inset-0 opacity-30 bg-[linear-gradient(120deg,rgba(255,255,255,0.04)_0%,rgba(255,255,255,0)_55%)]" />
+            <div className="absolute inset-0 animate-shimmer" />
+            <div className="relative h-full">
+              <div className="absolute top-8 left-8 flex gap-4">
+                {[1, 2, 3, 4].map((stepIndex) => (
+                  <StepIndicator
+                    key={stepIndex}
+                    step={stepIndex}
+                    current={step}
+                  />
+                ))}
+              </div>
+              {step === 1 && <Splash onStart={() => setStep(2)} />}
+              {step === 2 && (
+                <LeadCapture
+                  data={leadData}
+                  onChange={(data) => setLeadData(data)}
+                  onNext={() => setStep(3)}
+                />
+              )}
+              {step === 3 && (
+                <RoleSelect
+                  role={role}
+                  onSelect={(value) => setRole(value)}
+                  onNext={() => setStep(4)}
+                />
+              )}
+              {step === 4 && (
+                <Dashboard
+                  leadData={{ ...leadData, setLeadData }}
+                  role={role}
+                  cards={cards}
+                  onToggleCard={handleToggleCard}
+                />
+              )}
+            </div>
+          </div>
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
