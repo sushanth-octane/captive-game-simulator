@@ -264,10 +264,8 @@
         if (hasSeasonalPromos && (monthOfYear === 5 || monthOfYear === 11)) {
           currentVolumeMult *= 1.4;
           currentYieldMult *= 0.9;
-        } else {
-          const seasonality = 1 + 0.08 * Math.sin((monthOfYear / 12) * Math.PI * 2);
-          currentVolumeMult *= seasonality;
         }
+        // Standard seasonality removed as requested
 
         // --- 4. Monthly Calculation ---
         const monthlyVolumeBase = annualVolume / 12;
@@ -473,18 +471,27 @@
       );
     };
 
-    const BarChart = ({ data }) => {
-      const maxValue = Math.max(...data.map((d) => d.value), 1);
+    const CashFlowTable = ({ data }) => {
       return (
-        <div className="flex items-end gap-2 h-32">
-          {data.map((d) => (
-            <div
-              key={d.year}
-              className="flex-1 rounded-t bg-emerald-400/70 hover:bg-emerald-400 transition-colors"
-              style={{ height: `${(d.value / maxValue) * 100}%` }}
-              title={`Year ${d.year}: ${formatCurrency(d.value)}`}
-            />
-          ))}
+        <div className="overflow-x-auto max-h-64 custom-scrollbar">
+          <table className="w-full text-left text-sm">
+            <thead className="sticky top-0 bg-[#0E1A24] z-10 text-xs uppercase tracking-wider text-sand/50 border-b border-white/10">
+              <tr>
+                <th className="py-2">Year</th>
+                <th className="py-2 text-right">Net Profit</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {data.map((item) => (
+                <tr key={item.year} className="group hover:bg-white/5 transition-colors">
+                  <td className="py-2 font-mono text-sand/70">Year {item.year}</td>
+                  <td className="py-2 text-right font-mono text-sand">
+                    {formatCurrency(item.value)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       );
     };
@@ -1015,10 +1022,7 @@
                   Cash Flow Distribution
                 </p>
                 <div className="mt-4">
-                  <BarChart data={simulation.annualProfits} />
-                </div>
-                <div className="mt-4 text-xs text-sand/60 text-center">
-                  Annual Net Dealer Profit (Years 1-10)
+                  <CashFlowTable data={simulation.annualProfits} />
                 </div>
               </div>
 
